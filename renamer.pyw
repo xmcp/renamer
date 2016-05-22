@@ -94,7 +94,7 @@ def file_filter(*_):
             return lambda x: pattern.get() in x
         elif md=='regex':
             re_exp=re.compile(pattern.get())
-            return lambda x: re_exp.match(x)
+            return lambda x: re_exp.search(x)
         elif md=='lambda':
             return eval(pattern.get())
         else:
