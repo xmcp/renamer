@@ -1,374 +1,168 @@
-#coding=utf-8
+# coding=utf-8
+import subprocess
 import tempfile
 from tkinter import *
-from tkinter import filedialog, messagebox, simpledialog
 from tkinter.ttk import *
+from tkinter import messagebox, scrolledtext
+
+from dnd_wrapper import TkDND, _parse_list
 
 import os
 import shutil
-from collections import OrderedDict
-from ast import literal_eval
-import re
-
-import subprocess
 
 tk=Tk()
-tk.title('Renamer')
-tk.rowconfigure(0,weight=1)
-tk.columnconfigure(0,weight=1)
+rootdnd=TkDND(tk)
+tk.title('REnamer')
+tk.resizable(False, False)
 
-filesvar=StringVar()
+procdir_var=IntVar(value=0)
+msg_var=StringVar(value='拖拽文件到这里')
+fns=[]  # [ ('c:/dir/to', 'file.txt'), ... ]
 
-book=Notebook(tk)
-book.grid(row=0,column=0,sticky='nswe')
+f=Frame(tk)
+f.grid(row=0, column=0)
 
-fi=Frame(book)
-fe=Frame(book)
-fr=Frame(book)
-book.add(fi,text=' 1. 导入 ')
-book.add(fe,text=' 2. 编辑 ')
-book.add(fr,text=' 3. 重构 ')
+def do_rename(old, new):
+    L=len(old)
+    assert L==len(new)
+    err=False
 
-##### import
-
-fi.rowconfigure(1,weight=1)
-fi.columnconfigure(3,weight=1)
-
-def _gtfiles():
-    return literal_eval(filesvar.get() or '()')
-
-def _addfiles(files):
-    old=_gtfiles()
-    new=OrderedDict.fromkeys(old+tuple((os.path.normpath(x) for x in files)))
-    filesvar.set(tuple(new))
-
-def import_single(*_):
-    fns=filedialog.askopenfilenames(title='导入文件……')
-    _addfiles(fns)
-
-def import_list(*_):
-    tl=Toplevel(tk)
-    tl.title('导入文件列表')
-    tl.rowconfigure(0,weight=1)
-    tl.columnconfigure(0,weight=1)
-
-    def _do_import(*_):
-        _addfiles([x.strip() for x in t.get(1.0,END).split('\n') if x.strip()])
-        tl.destroy()
-
-    t=Text(tl,font='Consolas -12')
-    t.grid(row=0,column=0,sticky='nswe')
-    t_sbar=Scrollbar(tl,orient=VERTICAL,command=t.yview)
-    t_sbar.grid(row=0,column=1,sticky='ns')
-    t['yscrollcommand'] = t_sbar.set
-
-    Button(tl,text='批量导入',command=_do_import).grid(row=1,column=0,columnspan=2,sticky='we')
-
-    tl.focus_force()
-
-def import_folder(*_):
-    folder=filedialog.askdirectory(title='导入目录……')
-    res=[]
-    warned=False
-    for root,_,files in os.walk(folder,followlinks=True):
-        res+=[os.path.join(root,x) for x in files]
-        if not warned and len(res)>10000:
-            if messagebox.askokcancel('Renamer','警告：您将要同时添加超过一万个文件'):
-                warned=True
+    for i in range(L):
+        if old[i]==new[i]:
+            continue
+        try:
+            if new[i]:
+                os.makedirs(new[i][0], exist_ok=True)
+                shutil.move(os.path.join(*old[i]), os.path.join(*new[i]))
             else:
-                return
-    _addfiles(res)
+                os.remove(os.path.join(*old[i]))
+        except Exception as e:
+            messagebox.showerror('REnamer', f'{repr(e)}\n\n{old[i]}\n{new[i]}')
+            err=True
 
-def file_filter(*_):
-    tl=Toplevel(tk)
-    tl.title('过滤文件')
-    tl.resizable(True,False)
-    tl.columnconfigure(0,weight=1)
+    return not err
 
-    mode=StringVar(value='text')
-    pattern=StringVar()
+def show_confirm_box(old, new):
+    L=len(old)
+    assert L==len(new)
 
-    def _proc(*_):
-        md=mode.get()
-        if md=='text':
-            return lambda x: pattern.get() in x
-        elif md=='regex':
-            re_exp=re.compile(pattern.get())
-            return lambda x: re_exp.search(x)
-        elif md=='lambda':
-            return eval(pattern.get())
+    def callback():
+        if do_rename(old, new):
+            do_clear()
+            msg_var.set('重命名完成')
+            dialog.destroy()
+
+    dialog=Toplevel(tk)
+    dialog.title(f'确认重命名')
+    dialog.rowconfigure(0, weight=1)
+    dialog.columnconfigure(0, weight=1)
+    dialog.focus_force()
+    dialog.geometry('1300x700')
+
+    t=scrolledtext.ScrolledText(dialog)
+    t.grid(row=0, column=0, sticky='nswe')
+    t.tag_configure('prefix', background='#ddd', foreground='#444')
+    t.tag_configure('dir', background='#fff', foreground='#000')
+    t.tag_configure('fn', background='#b7cbf7', foreground='#000')
+    t.tag_configure('delete', background='#f2bcbc', foreground='#000')
+
+    for i in range(L):
+        if old[i]==new[i]:
+            continue
+
+        t.insert('end', ' < ', 'prefix', ' ')
+        t.insert('end', old[i][0], 'dir', '/')
+        t.insert('end', old[i][1], 'fn', '\n')
+
+        t.insert('end', ' > ', 'prefix', ' ')
+        if new[i]:
+            t.insert('end', new[i][0], 'dir', '/')
+            t.insert('end', new[i][1], 'fn', '\n\n')
         else:
-            raise RuntimeError('bad mode arg')
+            t.insert('end', ' 将被删除 ', 'delete', '\n\n')
 
-    def _preview(*_):
-        res=[]
-        tester=_proc()
-        for fn in _gtfiles():
-            if tester(fn):
-                res.append(fn)
-                if len(res)>20:
-                    res.append('< 达到20项匹配，其余结果已截断 >')
-                    break
-        messagebox.showinfo(
-            'Renamer',
-            '匹配结果：\n\n%s\n\n这些项将被【%s】'%(('\n'.join(res)),'删除' if chb.instate(['selected']) else '保留')
-        )
-        tl.focus_force()
+    t['state']='disabled'
 
-    def _do_filter(*_):
-        tester=_proc()
-        fns=(x for x in _gtfiles() if (not tester(x) if chb.instate(['selected']) else tester(x)))
-        filesvar.set(tuple(fns))
+    Button(dialog, text='重命名', command=callback).grid(row=1, column=0, sticky='we')
 
-    btn_f=Frame(tl)
-    btn_f.grid(row=0,column=0,columnspan=3,sticky='we')
-    Radiobutton(btn_f,text='字符串匹配',variable=mode,value='text').grid(row=0,column=0)
-    Radiobutton(btn_f,text='正则表达式',variable=mode,value='regex').grid(row=0,column=1)
-    Radiobutton(btn_f,text='lambda 表达式',variable=mode,value='lambda').grid(row=0,column=2)
-    chb=Checkbutton(btn_f,text='删除匹配项')
-    chb.grid(row=0,column=3)
-    chb.state(['!alternate','!selected'])
+def update_count():
+    msg_var.set(f'已选择 {len(fns)} 个文件')
 
-    Entry(tl,textvariable=pattern).grid(row=1,column=0,sticky='we')
-    Button(tl,text='预览',command=_preview).grid(row=1,column=1)
-    Button(tl,text='过滤',command=_do_filter).grid(row=1,column=2)
+def do_drop(event):
+    global fns
 
-    tl.focus_force()
+    for fn in _parse_list(tk, event.data):
+        splited=os.path.split(fn)
+        if splited not in fns:
+            fns.append(splited)
 
-def delete_single(*_):
-    ind=lbox.curselection()
-    if len(ind)==1:
-        fns=list(_gtfiles())
-        del fns[ind[0]]
-        filesvar.set(tuple(fns))
+    fns=sorted(fns)
+    update_count()
 
-def clear_list(*_):
-    filesvar.set(())
+def do_clear():
+    fns.clear()
+    update_count()
 
-Button(fi,text='导入文件',command=import_single).grid(row=0,column=0)
-Button(fi,text='导入文件列表',command=import_list).grid(row=0,column=1)
-Button(fi,text='导入目录',command=import_folder).grid(row=0,column=2)
-Button(fi,text='过滤',command=file_filter).grid(row=0,column=4)
-Button(fi,text='清空列表',command=clear_list).grid(row=0,column=5)
-
-lbox_f=Frame(fi)
-lbox_f.grid(row=1,column=0,columnspan=6,sticky='nswe')
-lbox_f.rowconfigure(0,weight=1)
-lbox_f.columnconfigure(0,weight=1)
-
-lbox=Listbox(lbox_f,listvariable=filesvar)
-lbox.grid(row=0,column=0,sticky='nswe')
-lbox.bind('<Double-Button-1>',delete_single)
-lbox_sbar=Scrollbar(lbox_f,orient=VERTICAL,command=lbox.yview)
-lbox_sbar.grid(row=0,column=1,sticky='ns')
-lbox['yscrollcommand'] = lbox_sbar.set
-
-##### edit
-
-fe.rowconfigure(1,weight=1)
-fe.columnconfigure(1,weight=1)
-
-def _gtcontent():
-    return filter(None,fntxt.get(1.0,END).split('\n'))
-
-def init_fn(*_):
-    fntxt.delete(1.0,END)
-    fntxt.insert(END,'\n'.join([os.path.split(x)[1] for x in _gtfiles()]))
-
-def fn_replace(*_):
-    tl=Toplevel(tk)
-    tl.title('文件名替换')
-    tl.resizable(True,False)
-    tl.columnconfigure(0,weight=1)
-
-    pattern=StringVar()
-    replacer=StringVar()
-
-    def _proc():
-        if chb.instate(['selected']):
-            re_exp=re.compile(pattern.get())
-            return lambda x: re_exp.sub(replacer.get(),x)
-        else:
-            return lambda x: x.replace(pattern.get(),replacer.get())
-
-    def preview(*_):
-        procer=_proc()
-        res=[]
-        for fn in _gtcontent():
-            res.append('%s → %s'%(fn,procer(fn)))
-            if len(res)>20:
-                res.append('< 超过20项结果，其余结果已截断 >')
-                break
-        messagebox.showinfo('Renamer','替换结果预览：\n\n%s'%('\n'.join(res)))
-        tl.focus_force()
-
-    def replace(*_):
-        procer=_proc()
-        fns=[procer(x) for x in _gtcontent()]
-        fntxt.delete(1.0,END)
-        fntxt.insert(END,'\n'.join(fns))
-        tl.destroy()
-
-    Entry(tl,textvariable=pattern).grid(row=0,column=0,columnspan=3,sticky='we')
-    Entry(tl,textvariable=replacer).grid(row=1,column=0,columnspan=3,sticky='we')
-    chb=Checkbutton(tl,text='正则表达式')
-    chb.grid(row=2,column=0)
-    chb.state(['!alternate','selected'])
-    Button(tl,text='预览',command=preview).grid(row=2,column=1)
-    Button(tl,text='替换',command=replace).grid(row=2,column=2)
-
-    tl.focus_force()
-
-def python_replace(*_):
-    exp=simpledialog.askstring('输入 lambda 表达式','lambda f :')
-    if exp:
-        procer=eval('lambda f : '+exp)
-        fns=[procer(x) for x in _gtcontent()]
-        fntxt.delete(1.0,END)
-        fntxt.insert(END,'\n'.join((str(x) for x in fns)))
-
-def open_in_npp(*_):
+def do_proc(*_):
     editors=[
         '%programfiles%/notepad++/notepad++.exe',
         '%programfiles(x86)%/notepad++/notepad++.exe',
         '%ProgramW6432%/notepad++/notepad++.exe',
         '%systemroot%/system32/notepad.exe',
-        #todo: add more
     ]
+    procdir=procdir_var.get()
+
+    def stringify(fns):
+        return '\n'.join([(os.path.join(d, f).replace('\\', '/') if procdir else f) for d, f in fns])
+
+    def parse(txt):
+        lines=txt.split('\n')
+
+        if len(lines)!=len(fns):
+            messagebox.showerror('REnamer', '文件行数错误')
+            raise RuntimeError(f'bad line count {len(lines)}')
+        if procdir:
+            for l in lines:
+                if not os.path.isabs(l):
+                    messagebox.showerror('REnamer', f'{l} 不是绝对路径')
+                    raise RuntimeError(f'not absolute {l}')
+
+        return [(
+            (os.path.split(l) if procdir else (fns[ind][0], l))
+            if l else None
+        ) for ind, l in enumerate(lines)]
+
     for editor in editors:
         if os.path.isfile(os.path.expandvars(editor)):
             tmpfn=tempfile.mktemp('.filenames.txt')
-            old_content='\n'.join(_gtcontent())
-            with open(tmpfn,'w') as f:
+            old_content=stringify(fns)
+            with open(tmpfn, 'w') as f:
                 f.write(old_content)
+
             subprocess.Popen(
                 executable=os.path.expandvars('%systemroot%/system32/cmd.exe'),
-                args='/c start /wait "" "%s" "%s"'%(os.path.expandvars(editor),tmpfn)
+                args='/c start /wait "" "%s" "%s"'%(os.path.expandvars(editor), tmpfn)
             ).wait()
+
             if os.path.isfile(tmpfn):
-                with open(tmpfn,'r') as f:
+                with open(tmpfn, 'r') as f:
                     new_content=f.read()
                 os.remove(tmpfn)
-                if old_content!=new_content and messagebox.askyesno('Renamer','是否应用外部编辑器的更改？'):
-                    fntxt.delete(1.0,END)
-                    fntxt.insert(END,new_content)
+                if old_content!=new_content:
+                    new_fns=parse(new_content)
+                    show_confirm_box(fns, new_fns)
+                else:
+                    msg_var.set('文件没有修改')
             break
     else:
-        messagebox.showerror('Renamer','没有可用的外部编辑器')
+        messagebox.showerror('Renamer', '没有可用的外部编辑器')
 
-def replace_with_ind(*_):
-    tl=Toplevel(tk)
-    tl.title('插入序号')
-    tl.resizable(True,False)
-    tl.columnconfigure(2,weight=1)
+Button(f, text='清空', command=do_clear, width=7).grid(row=0, column=0)
+Button(f, text='重命名', command=do_proc, width=14).grid(row=0, column=1)
+Checkbutton(f, text='包含路径', variable=procdir_var, onvalue=1, offvalue=0).grid(row=0, column=2)
 
-    pattern=StringVar(value='##')
-    replacer=StringVar(value='%d')
-    startfrom=IntVar(value=1)
+Label(tk, textvariable=msg_var).grid(row=1, column=0, pady=30)
 
-    def _do_insert(*_):
-        pat=pattern.get()
-        rep=replacer.get()
-        current=startfrom.get()
-        res=[]
-        for fn in _gtcontent():
-            res.append(fn.replace(pat,rep%current))
-            current+=1
-        fntxt.delete(1.0,END)
-        fntxt.insert(END,'\n'.join(res))
-        tl.destroy()
-
-    Label(tl,text='占位符').grid(row=0,column=0)
-    Entry(tl,textvariable=pattern).grid(row=0,column=1,columnspan=3,sticky='we')
-    Label(tl,text='序号格式').grid(row=1,column=0)
-    Entry(tl,textvariable=replacer).grid(row=1,column=1,columnspan=3,sticky='we')
-    Label(tl,text='起始于').grid(row=2,column=0)
-    Entry(tl,textvariable=startfrom,width=6).grid(row=2,column=1)
-    Button(tl,text='插入',command=_do_insert).grid(row=2,column=3)
-
-    tl.focus_force()
-
-
-Button(fe,text='重置文件名',command=init_fn).grid(row=0,column=0)
-Button(fe,text='字符替换',command=fn_replace).grid(row=0,column=2)
-Button(fe,text='lambda',command=python_replace).grid(row=0,column=3)
-Button(fe,text='外部编辑器',command=open_in_npp).grid(row=0,column=4)
-Button(fe,text='插入序号',command=replace_with_ind).grid(row=0,column=5)
-
-fntxt_f=Frame(fe)
-fntxt_f.grid(row=1,column=0,columnspan=6,sticky='nswe')
-fntxt_f.rowconfigure(0,weight=1)
-fntxt_f.columnconfigure(0,weight=1)
-
-fntxt=Text(fntxt_f,font='Consolas -12')
-fntxt.grid(row=0,column=0,sticky='nswe')
-fntxt_sbar=Scrollbar(fntxt_f,orient=VERTICAL,command=fntxt.yview)
-fntxt_sbar.grid(row=0,column=1,sticky='ns')
-fntxt['yscrollcommand'] = fntxt_sbar.set
-
-##### refactor
-
-def refresh(*_):
-    old_fns=_gtfiles()
-    new_fns=tuple(_gtcontent())
-    if len(old_fns)!=len(new_fns):
-        return messagebox.showerror('Renamer','新文件名数量有误')
-
-    for ind in range(len(old_fns)):
-        if not os.path.isfile(old_fns[ind]):
-            return messagebox.showerror('Rename','要改名的文件不存在：\n\n%s'%old_fns[ind])
-        if os.path.exists(new_fns[ind]):
-            return messagebox.showerror('Rename','改名的目标已经存在：\n\n%s'%new_fns[ind])
-
-    tree.delete(*tree.get_children())
-    for ind in range(len(old_fns)):
-        folder,old_fn=os.path.split(old_fns[ind])
-        tree.insert('','end',text=folder,values=(old_fn,new_fns[ind]))
-    return 'okay'
-
-def do_refactor(*_):
-    if refresh()!='okay':
-        return
-
-    old_fns=_gtfiles()
-    new_fns=tuple(_gtcontent())
-
-    prog['maximum']=len(old_fns)
-    prog['value']=0
-    for ind in range(len(old_fns)):
-        os.rename(old_fns[ind],os.path.join(os.path.split(old_fns[ind])[0],new_fns[ind]))
-        prog['value']+=1
-        tk.update_idletasks()
-
-    messagebox.showinfo('Renamer','处理完成')
-    clear_list()
-    fntxt.delete(1.0,END)
-    tree.delete(*tree.get_children())
-
-fr.rowconfigure(1,weight=1)
-fr.columnconfigure(2,weight=1)
-
-Button(fr,text='刷新状态',command=refresh).grid(row=0,column=0)
-Button(fr,text='全部重命名',command=do_refactor).grid(row=0,column=1)
-prog=Progressbar(fr,orient=HORIZONTAL,length=200)
-prog.grid(row=0,column=2,sticky='we')
-
-tree_f=Frame(fr)
-tree_f.grid(row=1,column=0,columnspan=3,sticky='nswe')
-tree_f.rowconfigure(0,weight=1)
-tree_f.columnconfigure(0,weight=1)
-
-tree=Treeview(tree_f,columns=('oldfn','newfn'))
-tree.grid(row=0,column=0,sticky='nswe')
-tree_sbar=Scrollbar(tree_f,orient=VERTICAL,command=tree.yview)
-tree_sbar.grid(row=0,column=1,sticky='ns')
-tree['yscrollcommand'] = tree_sbar.set
-
-tree.column('#0',width=150)
-tree.column('oldfn',width=200)
-tree.column('newfn',width=200)
-tree.heading('#0',text='位置')
-tree.heading('oldfn',text='原文件名')
-tree.heading('newfn',text='新文件名')
+rootdnd.bindtarget(tk, do_drop, 'text/uri-list')
 
 mainloop()
